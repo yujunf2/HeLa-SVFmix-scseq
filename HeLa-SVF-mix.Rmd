@@ -1,0 +1,271 @@
+---
+title: "HeLa-SVF-mix test"
+output: html_document
+date: "2024-08-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## HeLa-SVF mix test 
+
+This HeLa-SVF test is a pilot test using Low-throughput version of library preparation kit from 10X Genomics. The initial loading of cell is 1500 SVF plus 500 HeLa cells. This vignette is to show the minimal data processing steps after CellRanger output (shown in folder 10X_CellRangerReport/), in order to repeat major results shown in the Figure 4 for HeLa-SVF mixing test. This script includes 2 sections: \ 
+1. Preprocessing of RNA matrix by Seurat and Barcode matrix by CellHashR, compare HeLa/ SVF cell identification by RNA or HTO barcode; \
+2. SVF cell subset analysis for HTO barcode labeling in each SVF cell subtype. \ 
+
+# 1. Preprocessing RNA matrix 
+First, load necessary packages:
+
+```{r ,message=FALSE,warning=FALSE}
+library(tidyverse)
+library(Seurat)
+library(SoupX)
+library(dittoSeq)
+library(sctransform)
+library(ggplot2)
+library(cellhashR)
+library(scran)
+library(scater)
+library(DropletUtils)
+```
+
+Second, load RNA matrix: 
+
+```{r pressure, echo=FALSE}
+#load matrix. This data is available in our GEO deposit (acession number:).
+scData<-Read10X(data.dir="~/SVF_myscseq/results/cellranger/filtered_feature_bc_matrix")
+
+#the output after CellRanger count
+#subset RNA matrix
+HeLa_SVF<-CreateSeuratObject(
+  counts=scData[[1]],
+  names.field=1,
+  names.delim = "-",
+  min.cells = 20)
+
+#Add one column in metadata to represent mitocondrial gene percentage 
+MT.genes.human <- grep("^GRCh38-MT-", rownames(HeLa_SVF), value = TRUE)
+length(MT.genes.human)
+#"13"
+MT.genes.mouse <- grep("^GRCm39-mt-", rownames(HeLa_SVF), value = TRUE)
+length(MT.genes.mouse)
+#"13"
+MT.genes<-c(MT.genes.human, MT.genes.mouse)
+HeLa_SVF[["percent.mt"]] <- PercentageFeatureSet(HeLa_SVF, features = MT.genes) 
+
+#also add two metadata columns to represent the UMI values of human or mouse RNA 
+
+gene.human.temp<-grep("^GRCh",rownames(HeLa_SVF),value=TRUE)
+gene.mouse.temp<-grep("^GRCm",rownames(HeLa_SVF),value=TRUE)
+
+HeLa_SVF[["UMI_human"]] <- PercentageFeatureSet(HeLa_SVF, 
+                                               features = gene.human.temp)*HeLa_SVF$nCount_RNA/100
+HeLa_SVF[["UMI_mouse"]] <- PercentageFeatureSet(HeLa_SVF, 
+                                              features = gene.mouse.temp)*HeLa_SVF$nCount_RNA/100  
+
+plot1 <- FeatureScatter(HeLa_SVF, 
+                        feature1 = "UMI_human", 
+                        feature2 = "UMI_mouse")  +
+  scale_x_log10() + scale_y_log10()
+plot1
+
+#note that without any filtering, there is an extra cell cluster with both significantly lower UMI_mouse and UMI_human values 
+
+
+```
+
+
+Third, Barcode matrix is subset to another Seurat Obeject, and processed separately by CellHashR: 
+
+```{r pressure, echo=FALSE}
+
+HeLa_SVF_barcode<-CreateSeuratObject(
+  counts=scData[[2]],
+  names.field=1,
+  names.delim = "-",
+  min.cells = 20)
+
+raw_counts <- GetAssayData(HeLa_SVF_barcode, assay = "RNA", layer  = "counts")
+raw_counts_matrix <- as.matrix(raw_counts)
+write.csv(raw_counts_matrix, file = "raw_counts.csv") 
+barcodeData <- ProcessCountMatrix(rawCountData = 'raw_counts.csv', minCountPerCell = 0)
+calls <- GenerateCellHashingCalls(barcodeMatrix = barcodeData, methods = c('multiseq', 'htodemux')) 
+
+#note that there are a high percentage of cells are unlabeled, to further understand this negatively labeled population, we overlay the RNA count information with HTO barcode information 
+HeLa_SVF[["deMULTIplex"]]<-calls$multiseq 
+HeLa_SVF[["HTOdemux"]]<-calls$htodemux
+
+Idents(HeLa_SVF)<-HeLa_SVF$deMULTIplex
+plot2 <- FeatureScatter(HeLa_SVF, 
+                        feature1 = "UMI_human", 
+                        feature2 = "UMI_mouse")  +
+  scale_x_log10() + scale_y_log10() 
+
+plot2
+
+#We found that the cluster that has very low RNA counts are also identified as unlabeled by HTO barcode 
+# This cluster is potentially droplets containing no cells, but they are not filtered by CellRanger. We did not observe this population in SVF-only test, this is potentially caused by higher human RNA contamination than normal mouse cells in the ambient environment, hence CellRanger could not exclude it from the true cells. 
+
+#we filtered this cluster mannually by setting thresholds
+
+plot3 <- FeatureScatter(HeLa_SVF, 
+                        feature1 = "UMI_human", 
+                        feature2 = "UMI_mouse")  +
+  scale_x_log10() + scale_y_log10() +
+  geom_hline(yintercept=1200) +
+  geom_vline(xintercept=5000) 
+
+plot3
+DefaultAssay(HeLa_SVF)
+#[1] "RNA" 
+HeLa_SVF_filter<-subset(HeLa_SVF, subset =UMI_human > 5000 |UMI_mouse > 1200) 
+
+```
+
+#2. subset SVF cells and analyze the correlation between cell type and negatively labeled populations: 
+
+There are some negatively labeled SVF cells as observed in above plot. To understand if they belong to certain cell type, we subset SVF cells from the matrix, and annotate the cell types by RNA. 
+Due to the complex ambient environment for SVF cells, SoupX is typically used to reduce background noise and improve cell type identification accuracy. (Cottam et al. 2022 ) Hence, in this section, we applied SoupX to subset RNA matrix that remove most human cells. Then, for soupX processed matrix, we use Seurat to identify top10 genes expressed in each cluster to define major cell type. At last, we overlay the barcode matrix information on each cell type to determine the features of unlabeled cells in SVF. 
+
+```{r pressure, echo=FALSE}
+
+#subset SVF cells by RNA threshold. Considering that RNA counts in human cell are significantly higher than mouse cells, here we used #isOutlier method to identify cells that have lower
+
+temp2 <- scater::isOutlier(HeLa_SVF_filter$nCount_RNA,
+                           nmads = 3, type = "higher")
+
+UMI.threshold <- min(HeLa_SVF_filter$nCount_RNA[temp2])
+#[1] 103661
+
+Idents(HeLa_SVF_filter)<-HeLa_SVF_filter$deMULTIplex 
+
+VlnPlot(HeLa_SVF_filter, features = c("nCount_RNA"),
+        pt.size = 0.5,log=TRUE) + 
+  geom_hline(yintercept = UMI.threshold, 
+             color = "red", size = 2)
+
+SVF_filter <- subset(HeLa_SVF_filter, 
+                        subset = nCount_RNA<UMI.threshold)
+
+# initial clustering of subset SVF cells before SoupX 
+SVF_filter <- SCTransform(SVF_filter, 
+                             method = "glmGamPoi",
+                             vars.to.regress = "percent.mt", 
+                             return.only.var.genes = FALSE, 
+                             vst.flavor = "v2")
+SVF_filter <- RunPCA(SVF_filter, verbose = FALSE) 
+SVF_filter <- RunUMAP(SVF_filter, 
+                         dims = 1:40, 
+                         verbose = FALSE)
+SVF_filter <- FindNeighbors(SVF_filter, dims = 1:50, verbose = FALSE)
+SVF_filter <- FindClusters(SVF_filter, verbose = TRUE)
+
+table(SVF_filter$seurat_clusters)
+#  0   1   2   3   4   5   6   7   8   9  10  11  12  13 
+#165 150 149 122 118 109  96  76  71  53  51  41  33  25  
+
+#after obtaining the initially clustered SVF cells, we applied SoupX to its initial RNA matrix 
+joint.bcs<-intersect(colnames(SVF_filter),colnames(scData[[1]]))
+scData<-scData[[1]]
+scData<-scData[,joint.bcs]
+scData_raw<-Read10X(data.dir = "~/SVF_myscseq/results/cellranger/raw_feature_bc_matrix/")
+sc<- SoupChannel(scData_raw[[1]], scData, calcSoupProfile = FALSE)
+sc<- estimateSoup(sc)
+#Channel with 41954 genes and 1259 cells 
+#this number is close to the loading number of SVF (1500 cells, with a viability of ~85%) 
+
+#Then, according to the vignette of SoupX, we add the cluster information to soupx channel object: 
+SVF_meta<-SVF_filter[[]]
+sc<-setClusters(sc, setNames(SVF_meta$seurat_clusters, rownames(SVF_meta)))
+umap<-SVF_filter@reductions$umap@cell.embeddings
+sc <- setDR(sc, umap)
+sc <- autoEstCont(sc)
+
+#show the top20 background genes, all of them are human genes 
+head(sc$soupProfile[order(sc$soupProfile$est, decreasing = T), ], n = 20)
+
+#output cleaned matrix 
+adj.matrix  <- adjustCounts(sc, roundToInt = T)
+DropletUtils:::write10xCounts("soupX_SVF_filter", adj.matrix)  
+#this new count matrix will be used for cell type annotation 
+```
+
+Now, after obtaining the cleaned RNA matrix, we re-run all normalization and clustering steps. This part is same as previous step and not listed here. 
+```{r pressure, echo=FALSE, fig.width=15, fig.height=5}
+scData<-Read10X(data.dir="~/SVF_myscseq/results/soupX_SVF_filter/")
+SVF_soup<-CreateSeuratObject(
+  counts=scData,
+  names.field=1,
+  names.delim = "-",
+  min.cells = 10)
+
+SVF_soup[["percent.mt"]] <- PercentageFeatureSet(SVF_soup, 
+                                               features = MT.genes)
+temp1 <- scater::isOutlier(SVF_soup$percent.mt, 
+                           nmads = 3, type = "higher")
+mt.threshold <- min(SVF_soup$percent.mt[temp1])
+mt.threshold
+#[1] 6.984255 
+
+SVF_soup_filter<-subset(SVF_soup, subset = percent.mt<mt.threshold )
+
+plot1 <- FeatureScatter(SVF_soup_filter, 
+                        feature1 = "nCount_RNA", 
+                        feature2 = "percent.mt")
+plot2 <- FeatureScatter(SVF_soup_filter, 
+                        feature1 = "nCount_RNA", 
+                        feature2 = "nFeature_RNA")
+plot3 <- FeatureScatter(SVF_soup_filter, 
+                        feature1 = "nFeature_RNA", 
+                        feature2 = "percent.mt")
+
+plot1+plot2+plot3
+
+SVF_soup_filter <- SCTransform(SVF_soup_filter, 
+                             method = "glmGamPoi",
+                             vars.to.regress = "percent.mt", 
+                             return.only.var.genes = FALSE, 
+                             vst.flavor = "v2") 
+SVF_soup_filter <- RunPCA(SVF_soup_filter, verbose = FALSE)
+p<-ElbowPlot(SVF_soup_filter, 50)
+p
+SVF_soup_filter <- RunUMAP(SVF_soup_filter, 
+                         dims = 1:40, 
+                         verbose = FALSE)
+SVF_soup_filter <- FindNeighbors(SVF_soup_filter, dims = 1:40, verbose = FALSE) 
+SVF_soup_filter <- FindClusters(SVF_soup_filter, verbose = TRUE) 
+
+p<-dittoDimPlot(SVF_soup_filter, 
+                var = "seurat_clusters", 
+                reduction.use = "umap", 
+                do.label = TRUE, 
+                labels.highlight = TRUE, 
+                size = 3,
+                labels.size = 7)+
+  labs(title = "UMAP of SVF cells after SoupX",
+       x= "UMAP-1",
+       y= "UMAP-2")+
+  theme(plot.title = element_text(size = 20, face = "bold"),
+        axis.title.x = element_text(size = 18, face = "bold", vjust = 0.5),
+        axis.title.y = element_text(size = 18, face = "bold", angle = 90, vjust = 0.5))
+p 
+
+#Identify the top10 markers in each cluster to annotate major cell types 
+
+SVF_soup_filter_markers <- FindAllMarkers(SVF_soup_filter, verbose = FALSE,
+                                     assay = "SCT", 
+                                     slot = "data",
+                                     min.pct = 0.1, 
+                                     logfc.threshold = 0.25,
+                                     max.cells.per.ident = 800)
+
+top10 <- SVF_soup_filter_markers %>% 
+  group_by(cluster) %>%
+  slice_min(order_by =  p_val, n = 10, with_ties = FALSE) %>%
+  ungroup()
+
+#show the type of HTO barcode label state in each SVF cell subtype
+
+```
+
