@@ -5,8 +5,16 @@ The raw sequencing data and data after CellRanger Count (processed data) are acc
 Corresponding file names are: 
 
 - Raw sequencing data:
-  SVF_GEX_S1_L002_I1_001.fastq.gz	SVF_GEX_S1_L002_I2_001.fastq.gz	SVF_GEX_S1_L002_R1_001.fastq.gz	SVF_GEX_S1_L002_R2_001.fastq.gz
-  SVF_SurfaceP_S2_L002_I1_001.fastq.gz	SVF_SurfaceP_S2_L002_I2_001.fastq.gz	SVF_SurfaceP_S2_L002_R1_001.fastq.gz	SVF_SurfaceP_S2_L002_R2_001.fastq.gz
+  - SVF_GEX_S1_L002_I1_001.fastq.gz
+  - SVF_GEX_S1_L002_I2_001.fastq.gz
+  - SVF_GEX_S1_L002_R1_001.fastq.gz
+  - SVF_GEX_S1_L002_R2_001.fastq.gz
+  - SVF_SurfaceP_S2_L002_I1_001.fastq.gz
+  - SVF_SurfaceP_S2_L002_I2_001.fastq.gz
+  - SVF_SurfaceP_S2_L002_R1_001.fastq.gz
+  - SVF_SurfaceP_S2_L002_R2_001.fastq.gz
   
 - Processed files:
-  SVF_barcodes.tsv.gz	SVF_features.tsv.gz	SVF_matrix.mtx.gz
+  - SVF_barcodes.tsv.gz
+  - SVF_features.tsv.gz
+  - SVF_matrix.mtx.gz
