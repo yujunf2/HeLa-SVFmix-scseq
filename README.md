@@ -1,6 +1,6 @@
 This file contains script that processes sequencing data after CellRanger Count in the HeLa-SVF 'spiecies-mixing' test. 
 Major result and analysis are shown in Figure 4 and Figure S17. 
-The raw sequencing data and data after CellRanger Count (processed data) are accessible on GEO recordes with accession code: GSE280262. 
+The raw sequencing data and data after CellRanger Count (Processed files) are accessible on GEO recordes with accession code: GSE280262. 
 
 Corresponding file names are: 
 
